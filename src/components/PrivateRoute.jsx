@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-// UPDATED: Import from services/dataService
-import { getGeneralSettings } from '@/services/dataService';
+import { normalizeRole } from '@/utils/roleUtils';
+import { getGeneralSettings } from '@/utils/settingsUtils'; // Import the settings function
+import { canAccessRoute } from '@/utils/roleUtils';
 
 /**
  * PrivateRoute component - Protects routes that require authentication
@@ -10,7 +11,7 @@ import { getGeneralSettings } from '@/services/dataService';
  * Handles nonmember redirection based on settings
  */
 const PrivateRoute = ({ children, allowedRoles = [] }) => {
-  const { user, loading } = useAuth();
+  const { user, authReady } = useAuth(); // Remove loading state
   const location = useLocation();
   const [settings, setSettings] = useState({ NonmemberSignupPrompt: false });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -34,12 +35,14 @@ const PrivateRoute = ({ children, allowedRoles = [] }) => {
   }, []);
 
   // Show loading spinner while authentication state is being determined
-  if (loading || !settingsLoaded) {
+  if (!authReady || !settingsLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Authenticating...</p>
+          <p className="mt-4 text-gray-600">
+            {!authReady ? 'Authenticating...' : 'Loading settings...'}
+          </p>
         </div>
       </div>
     );
@@ -51,97 +54,43 @@ const PrivateRoute = ({ children, allowedRoles = [] }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Check for nonmember users and settings
-  if (user && !user.role) {
-    console.log('👤 User has no role (nonmember)');
+  const normalizedRole = normalizeRole(user.role);
+  const routeValidation = validateRouteAccess(normalizedRole, location.pathname);
+
+  // Check route access using route utils
+  if (!routeValidation.hasAccess) {
+    console.log(`🚫 Access denied for ${normalizedRole} to ${location.pathname}`);
+    console.log(`🔄 Redirecting to: ${routeValidation.redirectTo}`);
+    return <Navigate to={routeValidation.redirectTo} replace />;
+  }
+
+  // FIXED: Handle nonmember users BEFORE role checking
+  if (user && (user.role === 'nonmember' || user.role === 'inactive' || !user.role)) {
+    console.log(`👤 User role '${user.role || 'undefined'}' identified as nonmember`);
+    
+    // If we're already on the dashboard, don't redirect again
+    if (location.pathname === '/dashboard') {
+      console.log('✅ Already on dashboard, allowing access');
+      return children;
+    }
     
     if (settings.NonmemberSignupPrompt) {
       console.log('🔄 Redirecting nonmember to signup prompt');
       return <Navigate to="/nonmember-prompt" replace />;
     } else {
-      console.log('🚫 Nonmember signup prompt disabled, denying access');
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50">
-          <div className="text-center">
-            <h1 className="text-2xl font-bold text-gray-900 mb-4">Access Denied</h1>
-            <p className="text-gray-600 mb-6">
-              You need an active membership to access this area.
-            </p>
-            <button 
-              onClick={() => window.location.href = '/login'}
-              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-            >
-              Back to Login
-            </button>
-          </div>
-        </div>
-      );
+      console.log('🔄 Redirecting nonmember to dashboard');
+      return <Navigate to="/dashboard" replace />;
     }
   }
 
-  // Handle users with role "nonmember" or similar
-  if (user && (user.role === 'nonmember' || user.role === 'inactive')) {
-    console.log(`👤 User role '${user.role}' identified as nonmember`);
-    
-    if (settings.NonmemberSignupPrompt) {
-      console.log('🔄 Redirecting nonmember to signup prompt');
-      return <Navigate to="/nonmember-prompt" replace />;
-    }
-  }
-
-  // Check role permissions if roles are specified
-  if (allowedRoles.length > 0 && user && !allowedRoles.includes(user.role)) {
-    console.log(`🚫 User role '${user.role}' not in allowed roles:`, allowedRoles);
-    
-    // FUTURE-READY: Redirect based on hierarchical role system
-    switch (user.role) {
-      case 'admin':
-        return <Navigate to="/dashboard" replace />;
-      case 'staff':
-        return <Navigate to="/dashboard" replace />;
-      case 'member':
-        return <Navigate to="/member/dashboard" replace />;
-      case 'nonmember':
-      case 'inactive':
-        if (settings.NonmemberSignupPrompt) {
-          return <Navigate to="/nonmember-prompt" replace />;
-        }
-        // Fall through to access denied
-      default:
-        // Show access denied for unrecognized roles
-        return (
-          <div className="min-h-screen flex items-center justify-center bg-gray-50">
-            <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-900 mb-4">Access Denied</h1>
-              <p className="text-gray-600 mb-4">
-                You don't have permission to access this page.
-              </p>
-              <p className="text-sm text-gray-500 mb-6">
-                <strong>Your role:</strong> {user.role} <br />
-                <strong>Required:</strong> {allowedRoles.join(', ')}
-              </p>
-              <div className="space-x-2">
-                <button 
-                  onClick={() => window.history.back()}
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-                >
-                  Go Back
-                </button>
-                <button 
-                  onClick={() => window.location.href = '/login'}
-                  className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
-                >
-                  Logout
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-    }
+  // If allowedRoles is specified, do additional check
+  if (allowedRoles.length > 0 && !allowedRoles.includes(normalizedRole)) {
+    console.log(`🚫 Role ${normalizedRole} not in allowed roles: ${allowedRoles}`);
+    return <Navigate to={routeValidation.redirectTo} replace />;
   }
 
   // User is authenticated and has permission
-  console.log('✅ User authenticated and authorized:', user.role);
+  console.log('✅ User authenticated and authorized:', normalizedRole);
   return children;
 };
 

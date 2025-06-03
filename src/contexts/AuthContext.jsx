@@ -1,11 +1,14 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { showToast } from '@/utils/toastUtils';
+import { storage, STORAGE_KEYS } from '@/utils/storageUtils';
+import { normalizeRole } from '@/utils/roleUtils';
 
 const AuthContext = createContext();
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
+  if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
@@ -13,73 +16,13 @@ export const useAuth = () => {
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true); // Start with true
+  const [authReady, setAuthReady] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  // Initialize auth state
-  useEffect(() => {
-    console.log('🔄 Initializing auth state...');
-    
-    // Timeout fallback to prevent infinite loading
-    const loadingTimeout = setTimeout(() => {
-      console.log('⏰ Auth loading timeout - forcing completion');
-      setLoading(false);
-    }, 10000); // 10 second max loading time
-    
-    // Get initial session
-    const getInitialSession = async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-          console.error('❌ Error getting session:', error);
-          setUser(null);
-        } else if (session?.user) {
-          console.log('✅ Found existing session');
-          await fetchUserProfile(session.user.id);
-        } else {
-          console.log('ℹ️ No existing session found');
-          setUser(null);
-        }
-      } catch (error) {
-        console.error('❌ Session initialization error:', error);
-        setUser(null);
-      } finally {
-        clearTimeout(loadingTimeout); // Clear timeout
-        setLoading(false);
-      }
-    };
-
-    getInitialSession();
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        console.log('🔄 Auth state changed:', event);
-        
-        if (event === 'SIGNED_IN' && session?.user) {
-          await fetchUserProfile(session.user.id);
-        } else if (event === 'SIGNED_OUT') {
-          setUser(null);
-        }
-        
-        clearTimeout(loadingTimeout); // Clear timeout
-        setLoading(false);
-      }
-    );
-
-    return () => {
-      clearTimeout(loadingTimeout);
-      subscription?.unsubscribe();
-    };
-  }, []);
-
-  // Fetch user profile from database
+  // ⭐ SIMPLIFIED: Faster user profile fetching
   const fetchUserProfile = async (userId) => {
     try {
-      console.log('🔍 Fetching user profile for:', userId);
-      
-      // Add a small delay to ensure the profile was created
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('[AuthContext] 🔍 Fetching user profile for:', userId);
       
       const { data, error } = await supabase
         .from('profiles')
@@ -88,161 +31,344 @@ export const AuthProvider = ({ children }) => {
         .single();
 
       if (error) {
-        console.error('❌ Error fetching profile:', error);
+        console.error('[AuthContext] ❌ Profile fetch error:', error);
         
-        // If profile doesn't exist yet, try again after a longer delay
-        if (error.code === 'PGRST116') {
-          console.log('🔄 Profile not found, retrying in 1 second...');
-          await new Promise(resolve => setTimeout(resolve, 1000));
+        // ⭐ CHECK: If profile doesn't exist, create one
+        if (error.code === 'PGRST116') { // No rows returned
+          console.log('[AuthContext] 📝 No profile found, creating basic profile...');
           
-          const { data: retryData, error: retryError } = await supabase
+          // ⭐ TRY: Create a basic profile
+          const newProfile = {
+            id: userId,
+            role: 'staff', // Default to staff
+            status: 'active',
+            first_name: '',
+            last_name: '',
+            email: '',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+          
+          // Try to insert the profile
+          const { data: insertData, error: insertError } = await supabase
             .from('profiles')
-            .select('*')
-            .eq('id', userId)
+            .insert([newProfile])
+            .select()
             .single();
             
-          if (retryError) {
-            console.error('❌ Retry failed:', retryError);
-            return null;
+          if (insertError) {
+            console.error('[AuthContext] ❌ Failed to create profile:', insertError);
+            // Return fallback profile anyway
+            return newProfile;
           }
           
-          console.log('✅ Profile fetched on retry:', retryData);
-          setUser(retryData);
-          return retryData;
+          console.log('[AuthContext] ✅ Created new profile:', insertData);
+          setUser(insertData);
+          return insertData;
         }
         
-        return null;
+        throw error;
       }
 
-      console.log('✅ Profile fetched:', data);
-      setUser(data);
-      return data;
+      // ⭐ VALIDATE: Ensure role exists
+      if (!data.role || data.role === null) {
+        console.warn('[AuthContext] ⚠️ Profile has no role, defaulting to staff');
+        data.role = 'staff';
+        
+        // Update the profile with default role
+        const { error: updateError } = await supabase
+          .from('profiles')
+          .update({ role: 'staff' })
+          .eq('id', userId);
+          
+        if (updateError) {
+          console.error('[AuthContext] ❌ Failed to update role:', updateError);
+        }
+      }
+
+      // ⭐ NORMALIZE: Clean and normalize the user data
+      const normalizedUser = {
+        ...data,
+        role: normalizeRole(data.role || 'staff')
+      };
+
+      console.log('[AuthContext] ✅ Profile fetched and normalized:', {
+        id: normalizedUser.id,
+        email: normalizedUser.email,
+        role: normalizedUser.role,
+        status: normalizedUser.status
+      });
+      
+      setUser(normalizedUser);
+      return normalizedUser;
+      
     } catch (error) {
-      console.error('❌ Profile fetch error:', error);
-      return null;
+      console.error('[AuthContext] ❌ Error fetching profile:', error);
+      
+      // ⭐ FALLBACK: Don't break auth flow, create minimal user
+      const fallbackUser = {
+        id: userId,
+        role: 'staff',
+        status: 'active',
+        email: 'unknown@example.com',
+        first_name: '',
+        last_name: ''
+      };
+      
+      console.log('[AuthContext] 🔧 Using fallback user:', fallbackUser);
+      setUser(fallbackUser);
+      return fallbackUser;
     }
   };
 
-  // Login function
-  const login = async (email, password) => {
-    try {
-      setLoading(true);
-      console.log('🔑 Logging in...');
+  // ⭐ SIMPLIFIED: Auth state listener with faster timeout
+  useEffect(() => {
+    console.log('[AuthContext] 🔄 Initializing auth state...');
+    
+    let isMounted = true;
+    let timeoutId;
+    
+    // ⭐ FASTER: Reduced timeout to 3 seconds
+    const authTimeout = setTimeout(() => {
+      if (isMounted) {
+        console.log('[AuthContext] ⚠️ Auth loading timeout - forcing completion');
+        setAuthReady(true);
+      }
+    }, 3000); // Reduced from 5000ms to 3000ms
 
+    const initializeAuth = async () => {
+      try {
+        // ⭐ FASTER: Get current session quickly
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error('[AuthContext] ❌ Session error:', error);
+          if (isMounted) {
+            setAuthReady(true);
+          }
+          return;
+        }
+
+        if (session?.user && isMounted) {
+          console.log('[AuthContext] 👤 Found existing session for:', session.user.id);
+          
+          // ⭐ ASYNC: Fetch profile in background, don't wait
+          fetchUserProfile(session.user.id).finally(() => {
+            if (isMounted) {
+              setAuthReady(true);
+              clearTimeout(authTimeout);
+            }
+          });
+        } else {
+          console.log('[AuthContext] 🚫 No active session');
+          if (isMounted) {
+            setAuthReady(true);
+            clearTimeout(authTimeout);
+          }
+        }
+        
+      } catch (error) {
+        console.error('[AuthContext] ❌ Auth initialization error:', error);
+        if (isMounted) {
+          setAuthReady(true);
+          clearTimeout(authTimeout);
+        }
+      }
+    };
+
+    // ⭐ FAST: Initialize immediately
+    initializeAuth();
+
+    // ⭐ SIMPLIFIED: Auth state change listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('[AuthContext] 🔄 Auth state changed:', event);
+      
+      if (!isMounted) return;
+
+      switch (event) {
+        case 'SIGNED_IN':
+          if (session?.user) {
+            // ⭐ BACKGROUND: Don't block UI for profile fetching
+            fetchUserProfile(session.user.id);
+          }
+          break;
+          
+        case 'SIGNED_OUT':
+          setUser(null);
+          storage.local.clear();
+          storage.session.clear();
+          break;
+          
+        case 'TOKEN_REFRESHED':
+          console.log('[AuthContext] 🔄 Token refreshed');
+          break;
+      }
+
+      if (!authReady) {
+        setAuthReady(true);
+        clearTimeout(authTimeout);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      clearTimeout(authTimeout);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const login = async (email, password) => {
+    setLoading(true);
+    
+    try {
+      console.log('[AuthContext] 🔑 Logging in...');
+      
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
 
-      if (error) {
-        console.error('❌ Login error:', error);
-        throw error;
-      }
+      if (error) throw error;
 
-      console.log('✅ Login successful');
-      return data;
+      console.log('[AuthContext] ✅ Login successful, fetching profile...');
+      console.log('[AuthContext] 🔍 Auth data:', data);
+      
+      // ⭐ IMMEDIATE: Fetch profile right after login
+      let userProfile = null;
+      if (data.user) {
+        try {
+          console.log('[AuthContext] 📋 Fetching profile for user ID:', data.user.id);
+          userProfile = await fetchUserProfile(data.user.id);
+          console.log('[AuthContext] ✅ Profile fetched successfully:', userProfile);
+        } catch (profileError) {
+          console.warn('[AuthContext] ⚠️ Profile fetch failed:', profileError);
+          console.log('[AuthContext] 🔧 Creating fallback profile...');
+          
+          userProfile = {
+            id: data.user.id,
+            email: data.user.email || '',
+            role: 'staff', // ⭐ DEFAULT: Assume staff for now
+            status: 'active',
+            first_name: '',
+            last_name: '',
+            created_at: new Date().toISOString()
+          };
+          setUser(userProfile);
+          console.log('[AuthContext] 📋 Fallback profile created:', userProfile);
+        }
+      }
+      
+      storage.local.set('last_login', new Date().toISOString());
+      
+      // ⭐ RETURN: User with profile data
+      const returnUser = userProfile || {
+        id: data.user.id,
+        email: data.user.email,
+        role: 'staff',
+        status: 'active'
+      };
+      
+      console.log('[AuthContext] 🎯 Returning user for login:', returnUser);
+      return { user: returnUser };
+      
     } catch (error) {
-      console.error('❌ Login failed:', error);
+      console.error('[AuthContext] ❌ Login error:', error);
+      
+      if (error.message.includes('Invalid login credentials')) {
+        showToast.error('Login Failed', 'Invalid email or password');
+      } else if (error.message.includes('Email not confirmed')) {
+        showToast.error('Email Not Verified', 'Please check your email and verify your account');
+      } else if (error.message.includes('Too many requests')) {
+        showToast.error('Too Many Attempts', 'Please wait a few minutes before trying again');
+      } else {
+        showToast.error('Login Failed', error.message);
+      }
+      
       throw error;
     } finally {
       setLoading(false);
     }
   };
 
-  // Sign up function
-  const signUp = async (email, password, userData = {}) => {
+  const signup = async (email, password, userData) => {
+    setLoading(true);
+    
     try {
-      setLoading(true);
-      console.log('📝 Starting signup process...');
-
+      console.log('[AuthContext] 📝 Signing up...');
+      
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            first_name: userData.firstName,
+            last_name: userData.lastName,
+            phone: userData.phone,
+          }
+        }
       });
 
-      if (error) {
-        console.error('❌ Signup error:', error);
-        throw error;
-      }
+      if (error) throw error;
 
-      // Create profile if signup successful
-      if (data.user) {
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .insert([
-            {
-              id: data.user.id,
-              email: data.user.email,
-              role: userData.role || 'member',
-              first_name: userData.firstName || '',    
-              last_name: userData.lastName || '',      
-              display_name: `${userData.firstName || ''} ${userData.lastName || ''}`.trim(), // Changed from full_name
-              created_at: new Date().toISOString(),
-            }
-          ]);
-
-        if (profileError) {
-          console.error('❌ Error creating profile:', profileError);
-          throw profileError;
-        }
-
-        console.log('✅ Profile created successfully');
-      }
-
-      console.log('✅ Signup successful');
-      return data;
+      showToast.success(
+        'Account Created!', 
+        'Please check your email to verify your account.'
+      );
+      
+      return { user: data.user };
+      
     } catch (error) {
-      console.error('❌ Signup failed:', error);
+      console.error('[AuthContext] ❌ Signup error:', error);
+      
+      if (error.message.includes('User already registered')) {
+        showToast.error('Account Exists', 'An account with this email already exists');
+      } else {
+        showToast.error('Signup Failed', error.message);
+      }
+      
       throw error;
     } finally {
       setLoading(false);
     }
   };
 
-  // Logout function
   const logout = async () => {
     try {
-      setLoading(true);
-      console.log('🚪 Logging out...');
-
-      const { error } = await supabase.auth.signOut();
+      console.log('[AuthContext] 🚪 Logging out...');
       
-      if (error) {
-        console.error('❌ Logout error:', error);
-        throw error;
-      }
-
+      // ⭐ CLEAR: All stored data
+      storage.local.remove(STORAGE_KEYS.USER_PREFERENCES);
+      storage.local.remove(STORAGE_KEYS.DASHBOARD_CONFIG);
+      storage.session.clear();
+      
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
       setUser(null);
-      console.log('✅ Logout successful');
+      
+      showToast.success('Logged Out', 'You have been successfully logged out');
+      
     } catch (error) {
-      console.error('❌ Logout failed:', error);
-      throw error;
-    } finally {
-      setLoading(false);
+      console.error('[AuthContext] ❌ Logout error:', error);
+      showToast.error('Logout Failed', error.message);
     }
-  };
-
-  // Refresh user profile
-  const refreshProfile = async () => {
-    if (user?.id) {
-      return await fetchUserProfile(user.id);
-    }
-    return null;
   };
 
   const value = {
     user,
+    authReady,
     loading,
     login,
-    signUp,
-    register: signUp,  // Alias for signup
-    signIn: login,     // Alias for login  
-    signOut: logout,   // Alias for logout
+    signup,
     logout,
-    refreshProfile,
+    fetchUserProfile,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
-
+export default AuthProvider;

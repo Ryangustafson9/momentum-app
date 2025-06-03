@@ -1,4 +1,76 @@
 import { createClient } from '@supabase/supabase-js';
+import { v4 as uuidv4 } from 'uuid';
+
+// Central logging system for consistent formatting and production control
+function log(message, ...args) {
+  if (import.meta.env.MODE !== 'production') {
+    console.log(`[Supabase] ${message}`, ...args);
+  }
+}
+
+function logError(message, ...args) {
+  if (import.meta.env.MODE !== 'production') {
+    console.error(`[Supabase] ❌ ${message}`, ...args);
+  }
+}
+
+function logWarn(message, ...args) {
+  if (import.meta.env.MODE !== 'production') {
+    console.warn(`[Supabase] ⚠️ ${message}`, ...args);
+  }
+}
+
+function logInfo(message, ...args) {
+  if (import.meta.env.MODE !== 'production') {
+    console.info(`[Supabase] ℹ️ ${message}`, ...args);
+  }
+}
+
+// Supabase ready state management
+let _ready = false;
+let _initializing = false;
+const _readyCallbacks = [];
+
+export function supabaseReady() {
+  return _ready;
+}
+
+export function onSupabaseReady(callback) {
+  if (_ready) {
+    callback();
+  } else {
+    _readyCallbacks.push(callback);
+  }
+}
+
+export function waitForSupabase() {
+  return new Promise((resolve) => {
+    if (_ready) {
+      resolve(true);
+    } else {
+      _readyCallbacks.push(() => resolve(true));
+    }
+  });
+}
+
+function markSupabaseReady() {
+  if (!_ready) {
+    _ready = true;
+    log('✅ Supabase client marked as ready');
+    
+    // Execute all waiting callbacks
+    _readyCallbacks.forEach(callback => {
+      try {
+        callback();
+      } catch (error) {
+        logError('Ready callback error:', error);
+      }
+    });
+    
+    // Clear callbacks array
+    _readyCallbacks.length = 0;
+  }
+}
 
 // Enhanced environment variable validation for local development
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -6,47 +78,47 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Comprehensive validation with local development awareness
 if (!supabaseUrl) {
-  console.error('❌ VITE_SUPABASE_URL is missing from environment variables');
-  console.error('📋 Add VITE_SUPABASE_URL=http://127.0.0.1:54321 to your .env file');
-  console.error('💡 Note: Vite requires VITE_ prefix for client-side access');
+  logError('VITE_SUPABASE_URL is missing from environment variables');
+  logError('📋 Add VITE_SUPABASE_URL=http://127.0.0.1:54321 to your .env file');
+  logError('💡 Note: Vite requires VITE_ prefix for client-side access');
   throw new Error('Missing VITE_SUPABASE_URL environment variable');
 }
 
 if (!supabaseAnonKey) {
-  console.error('❌ VITE_SUPABASE_ANON_KEY is missing from environment variables');
-  console.error('📋 Add VITE_SUPABASE_ANON_KEY=your_anon_key to your .env file');
-  console.error('💡 Note: Vite requires VITE_ prefix for client-side access');
+  logError('VITE_SUPABASE_ANON_KEY is missing from environment variables');
+  logError('📋 Add VITE_SUPABASE_ANON_KEY=your_anon_key to your .env file');
+  logError('💡 Note: Vite requires VITE_ prefix for client-side access');
   throw new Error('Missing VITE_SUPABASE_ANON_KEY environment variable');
 }
 
 // Detect local vs production environment
-const isLocalDevelopment = supabaseUrl.includes('127.0.0.1') || supabaseUrl.includes('localhost');
+export const isLocalDevelopment = supabaseUrl.includes('127.0.0.1') || supabaseUrl.includes('localhost');
 
 if (isLocalDevelopment) {
-  console.log('🏠 Local Supabase development environment detected');
-  console.log('🔗 Supabase URL:', supabaseUrl);
+  log('🏠 Local Supabase development environment detected');
+  log('🔗 Supabase URL:', supabaseUrl);
 } else {
   // Validate production URL format
   if (!supabaseUrl.startsWith('https://') || !supabaseUrl.includes('.supabase.co')) {
-    console.error('❌ Invalid Supabase URL format for production:', supabaseUrl);
-    console.error('📋 Production URL should be: https://your-project.supabase.co');
+    logError('Invalid Supabase URL format for production:', supabaseUrl);
+    logError('📋 Production URL should be: https://your-project.supabase.co');
     throw new Error('Invalid VITE_SUPABASE_URL format for production');
   }
-  console.log('☁️ Production Supabase environment detected');
-  console.log('🔗 Supabase URL:', supabaseUrl);
+  log('☁️ Production Supabase environment detected');
+  log('🔗 Supabase URL:', supabaseUrl);
 }
 
 // Basic key validation
 if (supabaseAnonKey.length < 50) {
-  console.error('❌ Supabase anon key appears to be invalid (too short)');
-  console.error('📋 Key should be a JWT token starting with eyJ...');
+  logError('Supabase anon key appears to be invalid (too short)');
+  logError('📋 Key should be a JWT token starting with eyJ...');
   throw new Error('Invalid VITE_SUPABASE_ANON_KEY format');
 }
 
-console.log('✅ Environment variables validated successfully');
-console.log('🔑 Anon Key:', supabaseAnonKey.substring(0, 20) + '...');
+log('✅ Environment variables validated successfully');
+log('🔑 Anon Key:', supabaseAnonKey.substring(0, 20) + '...');
 
-// FIXED: Enhanced WebSocket transport configuration for local development
+// Enhanced WebSocket transport configuration for local development
 const realtimeConfig = {
   params: {
     eventsPerSecond: 10,
@@ -78,9 +150,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
-console.log('🔧 Supabase client initialized successfully with enhanced WebSocket config');
+log('🔧 Supabase client initialized successfully with enhanced WebSocket config');
 
-// FIXED: Safe realtime monitoring with proper error handling
+// Realtime monitoring state
 let realtimeChannel = null;
 let monitoringRetries = 0;
 const MAX_MONITORING_RETRIES = 3;
@@ -88,49 +160,49 @@ const MAX_MONITORING_RETRIES = 3;
 // Initialize realtime connection monitoring with retry logic
 const initializeRealtimeMonitoring = async () => {
   if (monitoringRetries >= MAX_MONITORING_RETRIES) {
-    console.warn('⚠️ Max realtime monitoring retries reached, skipping for stability');
+    logWarn('Max realtime monitoring retries reached, skipping for stability');
     return;
   }
 
   try {
-    console.log(`📡 Initializing realtime monitoring (attempt ${monitoringRetries + 1}/${MAX_MONITORING_RETRIES})`);
+    log(`📡 Initializing realtime monitoring (attempt ${monitoringRetries + 1}/${MAX_MONITORING_RETRIES})`);
     
     // Wait a moment for supabase client to fully initialize
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Create a simple monitoring channel
-    realtimeChannel = supabase.channel(`system-status-${Date.now()}`);
+    // Create a simple monitoring channel with UUID for uniqueness
+    realtimeChannel = supabase.channel(`system-status-${uuidv4()}`);
     
     // Subscribe with enhanced error handling
     const subscription = realtimeChannel.subscribe((status, err) => {
       if (err) {
-        console.warn('⚠️ Realtime subscription error:', err.message);
+        logWarn('Realtime subscription error:', err.message);
         return;
       }
       
       switch (status) {
         case 'SUBSCRIBED':
-          console.log('✅ Supabase realtime connected successfully');
+          log('✅ Supabase realtime connected successfully');
           monitoringRetries = 0; // Reset retry counter on success
           break;
         case 'CHANNEL_ERROR':
-          console.warn('⚠️ Supabase realtime channel error (will retry)');
+          logWarn('Supabase realtime channel error (will retry)');
           scheduleRealtimeRetry();
           break;
         case 'TIMED_OUT':
-          console.warn('⏰ Supabase realtime connection timed out');
+          logWarn('Supabase realtime connection timed out');
           scheduleRealtimeRetry();
           break;
         case 'CLOSED':
-          console.log('🔌 Supabase realtime connection closed');
+          log('🔌 Supabase realtime connection closed');
           break;
         default:
-          console.log('📡 Supabase realtime status:', status);
+          log('📡 Supabase realtime status:', status);
       }
     });
     
   } catch (error) {
-    console.warn(`⚠️ Realtime monitoring setup failed (attempt ${monitoringRetries + 1}):`, error.message);
+    logWarn(`Realtime monitoring setup failed (attempt ${monitoringRetries + 1}):`, error.message);
     scheduleRealtimeRetry();
   }
 };
@@ -139,7 +211,7 @@ const initializeRealtimeMonitoring = async () => {
 const scheduleRealtimeRetry = () => {
   monitoringRetries++;
   if (monitoringRetries < MAX_MONITORING_RETRIES) {
-    console.log(`🔄 Scheduling realtime retry in ${monitoringRetries * 2} seconds...`);
+    log(`🔄 Scheduling realtime retry in ${monitoringRetries * 2} seconds...`);
     setTimeout(initializeRealtimeMonitoring, monitoringRetries * 2000);
   }
 };
@@ -147,7 +219,7 @@ const scheduleRealtimeRetry = () => {
 // Initialize realtime monitoring with delay
 setTimeout(initializeRealtimeMonitoring, 2000);
 
-// ENHANCED: Realtime utilities with better error handling
+// Realtime utilities with better error handling
 export function getRealtimeStatus() {
   try {
     if (!realtimeChannel) {
@@ -155,17 +227,17 @@ export function getRealtimeStatus() {
     }
     return realtimeChannel.state || 'UNKNOWN';
   } catch (error) {
-    console.warn('⚠️ Error getting realtime status:', error.message);
+    logWarn('Error getting realtime status:', error.message);
     return 'ERROR';
   }
 }
 
 export function createRealtimeChannel(channelName, options = {}) {
   try {
-    // Add random suffix to avoid channel name conflicts
-    const uniqueChannelName = `${channelName}-${Date.now()}`;
+    // Use UUID for truly unique channel names instead of timestamp
+    const uniqueChannelName = `${channelName}-${uuidv4()}`;
     
-    console.log(`📺 Creating realtime channel: ${uniqueChannelName}`);
+    log(`📺 Creating realtime channel: ${uniqueChannelName}`);
     
     const channel = supabase.channel(uniqueChannelName, {
       // Enhanced channel configuration for stability
@@ -177,26 +249,61 @@ export function createRealtimeChannel(channelName, options = {}) {
       ...options
     });
     
-    console.log(`✅ Created realtime channel: ${uniqueChannelName}`);
+    log(`✅ Created realtime channel: ${uniqueChannelName}`);
     return channel;
   } catch (error) {
-    console.warn(`⚠️ Failed to create realtime channel ${channelName}:`, error.message);
+    logWarn(`Failed to create realtime channel ${channelName}:`, error.message);
     return null;
   }
 }
 
 export function removeRealtimeChannel(channel) {
   try {
-    if (channel && supabase.removeChannel) {
-      supabase.removeChannel(channel);
-      console.log('📺 Realtime channel removed successfully');
+    if (channel) {
+      // Unsubscribe from the channel first
+      if (channel.unsubscribe) {
+        channel.unsubscribe();
+        log('📺 Channel unsubscribed successfully');
+      }
+      
+      // Then remove the channel from Supabase
+      if (supabase.removeChannel) {
+        supabase.removeChannel(channel);
+        log('📺 Realtime channel removed successfully');
+      }
+      
       return true;
     }
     return false;
   } catch (error) {
-    console.warn('⚠️ Failed to remove realtime channel:', error.message);
+    logWarn('Failed to remove realtime channel:', error.message);
     return false;
   }
+}
+
+// Enhanced cleanup function for graceful shutdown
+export function cleanup() {
+  try {
+    if (realtimeChannel) {
+      // Unsubscribe before removing
+      if (realtimeChannel.unsubscribe) {
+        realtimeChannel.unsubscribe();
+        log('📺 System channel unsubscribed');
+      }
+      
+      removeRealtimeChannel(realtimeChannel);
+      realtimeChannel = null;
+    }
+    monitoringRetries = 0;
+    log('🧹 Supabase client cleanup completed');
+  } catch (error) {
+    logError('Cleanup failed:', error);
+  }
+}
+
+// Register cleanup on page unload
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', cleanup);
 }
 
 // Utility functions
@@ -207,20 +314,26 @@ export async function getPublicUsers() {
       .select('*');
     
     if (error) {
-      console.error('Error fetching users:', error);
+      logError('Error fetching users:', error);
       return [];
     }
     
     return data || [];
   } catch (err) {
-    console.error('Unexpected error in getPublicUsers:', err);
+    logError('Unexpected error in getPublicUsers:', err);
     return [];
   }
 }
 
 export async function testConnection() {
   try {
-    console.log('🔍 Testing Supabase connection...');
+    log('🔍 Testing Supabase connection...');
+    
+    // Wait for client to be ready if not already
+    if (!_ready) {
+      log('⏳ Waiting for Supabase client to be ready...');
+      await waitForSupabase();
+    }
     
     // Test with a simple query that should work in both local and production
     const { data, error } = await supabase
@@ -228,24 +341,24 @@ export async function testConnection() {
       .select('count')
       .limit(1);
     
-    console.log('📊 Connection test result:', { data, error });
+    log('📊 Connection test result:', { data, error });
     
     if (error) {
-      console.error('❌ Connection test failed:', error);
+      logError('Connection test failed:', error);
       // For local development, try alternative test
       if (isLocalDevelopment) {
-        console.log('🔄 Trying alternative connection test for local environment...');
+        log('🔄 Trying alternative connection test for local environment...');
         const { error: healthError } = await supabase.from('general_settings').select('*').limit(1);
         return !healthError;
       }
       return false;
     }
     
-    console.log('✅ Supabase connection confirmed');
+    log('✅ Supabase connection confirmed');
     return true;
     
   } catch (err) {
-    console.error('❌ Connection test failed:', err);
+    logError('Connection test failed:', err);
     return false;
   }
 }
@@ -267,11 +380,11 @@ export async function checkDatabaseHealth() {
       realtimeRetries: monitoringRetries
     };
     
-    console.log('🏥 Database health check:', healthReport);
+    log('🏥 Database health check:', healthReport);
     return healthReport;
     
   } catch (error) {
-    console.error('❌ Database health check failed:', error);
+    logError('Database health check failed:', error);
     return {
       settings: false,
       profiles: false,
@@ -283,42 +396,49 @@ export async function checkDatabaseHealth() {
   }
 }
 
+export function getSupabaseLoadingState() {
+  return {
+    ready: _ready,
+    initializing: _initializing,
+    status: _ready ? 'ready' : _initializing ? 'initializing' : 'pending'
+  };
+}
+
 // Initialize connection test (non-blocking)
 (async () => {
+  if (_initializing) return; // Prevent multiple initialization
+  _initializing = true;
+  
   try {
+    log('🔄 Initializing Supabase connection...');
+    
     const connected = await testConnection();
     if (connected) {
-      console.log('🚀 Application ready for database operations');
+      log('🚀 Application ready for database operations');
+      
+      // Mark Supabase as ready for use
+      markSupabaseReady();
       
       // Run health check after successful connection
       setTimeout(async () => {
         await checkDatabaseHealth();
       }, 5000);
     } else {
-      console.warn('⚠️ Database connection issues detected - some features may not work');
+      logWarn('Database connection issues detected - some features may not work');
+      
+      // Still mark as ready for offline functionality
+      markSupabaseReady();
     }
   } catch (error) {
-    console.error('❌ Startup connection test failed:', error);
+    logError('Startup connection test failed:', error);
+    
+    // Mark as ready even if connection fails (for offline handling)
+    markSupabaseReady();
+  } finally {
+    _initializing = false;
   }
 })();
 
-// Enhanced cleanup function for graceful shutdown
-export function cleanup() {
-  try {
-    if (realtimeChannel) {
-      removeRealtimeChannel(realtimeChannel);
-      realtimeChannel = null;
-    }
-    monitoringRetries = 0;
-    console.log('🧹 Supabase client cleanup completed');
-  } catch (error) {
-    console.error('❌ Cleanup failed:', error);
-  }
-}
-
-// Register cleanup on page unload
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', cleanup);
-}
+export default supabase;
 
 

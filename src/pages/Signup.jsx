@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { CheckCircle, AlertCircle } from 'lucide-react';
 import { getGymLogo, getGymName, getGymColors } from '@/helpers/gymBranding';
 import { supabase } from '@/lib/supabaseClient';
+import { capitalizeName } from '@/utils/formHelpers.js';
 
 const Signup = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -28,102 +29,12 @@ const Signup = () => {
   });
   const [gymLogoError, setGymLogoError] = useState(false);
   const [momentumLogoError, setMomentumLogoError] = useState(false);
-  const [passwordStrength, setPasswordStrength] = useState({
-    score: 0,
-    feedback: '',
-    color: 'gray',
-    strengthText: ''
-  });
   const [passwordsMatch, setPasswordsMatch] = useState(null);
   const [duplicateEmailError, setDuplicateEmailError] = useState(false);
   
   // Get loading state and user from useAuth hook
   const { register, loading, user } = useAuth(); // Add user here
   const { toast } = useToast();
-
-  // Helper function for smart name capitalization
-  const capitalizeName = (name) => {
-    return name
-      .toLowerCase()
-      .split(' ')
-      .map(word => {
-        // Handle special cases like McDonald, O'Connor, etc.
-        if (word.includes("'")) {
-          return word.split("'").map(part => 
-            part.charAt(0).toUpperCase() + part.slice(1)
-          ).join("'");
-        }
-        if (word.startsWith('mc')) {
-          return 'Mc' + word.slice(2).charAt(0).toUpperCase() + word.slice(3);
-        }
-        return word.charAt(0).toUpperCase() + word.slice(1);
-      })
-      .join(' ');
-  };
-
-  // Password strength calculation with requirements tracking
-  const calculatePasswordStrength = (password) => {
-    if (!password) {
-      return { 
-        score: 0, 
-        feedback: '', 
-        color: 'gray',
-        strengthText: '',
-        requirements: {
-          length: false,
-          uppercase: false,
-          number: false,
-          special: false
-        }
-      };
-    }
-
-    let score = 0;
-    let feedback = [];
-    
-    // Requirements tracking
-    const requirements = {
-      length: password.length >= 8,
-      uppercase: /[A-Z]/.test(password),
-      number: /\d/.test(password),
-      special: /[!@#$%^&*(),.?":{}|<>]/.test(password)
-    };
-
-    // Calculate score based on requirements met
-    if (requirements.length) score += 25;
-    if (requirements.uppercase) score += 25;
-    if (requirements.number) score += 25;
-    if (requirements.special) score += 25;
-
-    // Build feedback for missing requirements
-    if (!requirements.length) feedback.push('8+ characters');
-    if (!requirements.uppercase) feedback.push('uppercase letter');
-    if (!requirements.number) feedback.push('number');
-    if (!requirements.special) feedback.push('special character');
-
-    // SIMPLIFIED: Only two states - Requirements Met or Requirements Needed
-    let strengthText = '';
-    let color = '';
-    
-    if (score === 0) {
-      strengthText = '';
-      color = 'gray';
-    } else if (score === 100) {
-      strengthText = 'Requirements Met';
-      color = 'green';
-    } else {
-      strengthText = 'Requirements Needed';
-      color = 'red';
-    }
-
-    return {
-      score,
-      feedback: feedback.length > 0 ? `Add: ${feedback.join(', ')}` : 'All requirements met!',
-      strengthText,
-      color,
-      requirements
-    };
-  };
 
   // Check if passwords match
   const checkPasswordsMatch = (password, confirmPassword) => {
@@ -383,6 +294,10 @@ const Signup = () => {
       formData.password === formData.confirmPassword
     );
   }, [formData, passwordStrength]);
+
+  const passwordStrength = useMemo(() => {
+    return calculatePasswordStrength(formData.password);
+  }, [formData.password]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 p-4">
@@ -768,5 +683,3 @@ const Signup = () => {
 };
 
 export default Signup;
-
-

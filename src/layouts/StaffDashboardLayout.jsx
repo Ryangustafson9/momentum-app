@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate, Routes, Route } from 'react-router-dom'; // ⭐ ADD Routes import
 import { motion } from 'framer-motion';
 import AdminSidebar from '@/components/admin/AdminSidebar.jsx';
 import AdminHeader from '@/components/admin/AdminHeader.jsx';

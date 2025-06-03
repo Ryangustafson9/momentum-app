@@ -1,7 +1,12 @@
+import { useState, useEffect } from 'react';
 
-import React, { useState, useEffect } from 'react';
-
-export function useDebounce(value, delay) {
+/**
+ * useDebounce hook - Delays updating a value until after a delay has passed
+ * @param {any} value - The value to debounce
+ * @param {number} delay - Delay in milliseconds
+ * @returns {any} - Debounced value
+ */
+export const useDebounce = (value, delay) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
 
   useEffect(() => {
@@ -15,6 +20,8 @@ export function useDebounce(value, delay) {
   }, [value, delay]);
 
   return debouncedValue;
-}
+};
+
+export default useDebounce;
 
 
